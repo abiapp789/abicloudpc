@@ -1,4 +1,4 @@
-name: Abi Cloud PC
+name: PC
 
 on:
   workflow_dispatch:
@@ -28,17 +28,23 @@ jobs:
           # Mask password in GitHub Actions runner logs
           Write-Host "::add-mask::$password"
           
-          # 1. Create User using Repository Secret
+          # 1. Disable local Windows password complexity requirements
+          net accounts /minpwlen:0
+          secedit /export /cfg "$env:TEMP\secpol.cfg"
+          (Get-Content "$env:TEMP\secpol.cfg") -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | Set-Content "$env:TEMP\secpol.cfg"
+          secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
+          
+          # 2. Create User using Repository Secret
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name $userName -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member $userName
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName
           
-          # 2. Add Registry Keys to prevent disconnect / logoff termination
+          # 3. Add Registry Keys to prevent disconnect / logoff termination
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fResetBroken" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fReconnectSame" -Value 1 -Force
 
-          # 3. Apply Group Policies for infinite session duration
+          # 4. Apply Group Policies for infinite session duration
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
           Set-ItemProperty -Path $tsPath -Name "MaxIdleTime" -Value 0 -Type DWord -Force
