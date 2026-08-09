@@ -1,4 +1,4 @@
-name: RDP
+name: Abi Cloud PC
 
 on:
   workflow_dispatch:
