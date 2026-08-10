@@ -37,15 +37,44 @@ jobs:
           Remove-Item $chromeExe -Force -ErrorAction SilentlyContinue
 
       - name: Register & Start Chrome Remote Desktop
-        shell: cmd
         env:
-          CRD_COMMAND: ${{ secrets.CRD_CODE }}
+          RAW_CRD_COMMAND: ${{ secrets.CRD_CODE }}
           CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
-          if "%CRD_PIN%"=="" (set CRD_PIN=123456)
-          
-          echo Registering Chrome Remote Desktop Host...
-          %CRD_COMMAND% --pin=%CRD_PIN%
+          $pin = $env:CRD_PIN
+          if (-not $pin) { $pin = "123456" }
+
+          $rawCmd = $env:RAW_CRD_COMMAND
+          if (-not $rawCmd) {
+              Write-Error "CRD_CODE secret is missing!"
+              exit 1
+          }
+
+          # Locate remotedesktop_host.exe directly on disk
+          $hostExe = "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop\CurrentVersion\remotedesktop_host.exe"
+          if (-not (Test-Path $hostExe)) {
+              $hostExe = "${env:ProgramFiles}\Google\Chrome Remote Desktop\CurrentVersion\remotedesktop_host.exe"
+          }
+
+          # Extract parameters from the raw Google command string
+          $codeMatch = [regex]::Match($rawCmd, '--code="?([^"\s]+)"?')
+          $redirectMatch = [regex]::Match($rawCmd, '--redirect-url="?([^"\s]+)"?')
+          $nameMatch = [regex]::Match($rawCmd, '--name="?([^"\s]+)"?')
+
+          if ($codeMatch.Success) {
+              $code = $codeMatch.Groups[1].Value
+              $redirectUrl = if ($redirectMatch.Success) { $redirectMatch.Groups[1].Value } else { "https://remotedesktop.google.com/_/oauthredirect" }
+              $name = if ($nameMatch.Success) { $nameMatch.Groups[1].Value } else { $env:COMPUTERNAME }
+
+              Write-Host "Registering Chrome Remote Desktop Host using direct executable..."
+              & $hostExe --svc-install-interactive
+              & $hostExe --start --code="$code" --redirect-url="$redirectUrl" --name="$name" --pin="$pin"
+          } else {
+              # Fallback: sanitize string and execute directly
+              Write-Host "Executing sanitized command fallback..."
+              $cleanCmd = $rawCmd -replace '^&\s*', '' -replace '`', ''
+              Invoke-Expression "$cleanCmd --pin=$pin"
+          }
 
       - name: Maintain Active Runner Loop
         run: |
