@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP & Power Settings
+      - name: Configure Core RDP & Display Settings
         run: |
           # Enable Remote Desktop safely
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -17,7 +17,7 @@ jobs:
           # Allow RDP through Windows Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-          # Disable monitor timeouts and power savings (Prevents stream freezes)
+          # Disable monitor timeout and power savings (Prevents black screen / frozen stream)
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change disk-timeout-ac 0
@@ -25,7 +25,7 @@ jobs:
           # Restart Remote Desktop Service
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User & Set Policy Retention
+      - name: Create RDP User & Configure Permanent Session Display
         run: |
           $userName = "Abi Cloud PC"
           $password = "${{ secrets.RDP_PASSWORD }}"
@@ -45,11 +45,11 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $userName
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName
           
-          # 3. Add Registry Keys to prevent disconnect / logoff termination
+          # 3. Add Registry Keys to prevent session termination & logoff
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fResetBroken" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fReconnectSame" -Value 1 -Force
 
-          # 4. Disable Lock Screen on Disconnect
+          # 4. Disable Lock Screen and Screen Saver (Fixes black screen on YouTube Live)
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
@@ -61,38 +61,9 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
 
-      - name: Install Virtual Display Driver (Fixes Black Screen on Live Stream)
+      - name: Install System-Level Console Redirector (Stream Keep-Alive)
         run: |
-          $driverUrl = "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
-          $driverZip = "$env:TEMP\usbmmidd.zip"
-          $driverDir = "C:\VirtualDisplay"
-          
-          # 1. Download and Extract
-          New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-          Invoke-WebRequest -Uri $driverUrl -OutFile $driverZip
-          Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force
-          
-          # 2. Locate deviceinstaller64.exe dynamically (Fixes nested path issue)
-          $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
-          
-          if (-not $installer) {
-              Write-Error "deviceinstaller64.exe was not found after extraction."
-              exit 1
-          }
-
-          $installerDir = $installer.DirectoryName
-          Set-Location $installerDir
-          
-          # 3. Install driver and enable virtual monitor
-          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
-          & .\deviceinstaller64.exe enableidd 1
-          
-          # 4. Set registry flags for active headless rendering
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name "AutoAdminLogon" -Value "0" -Force
-
-      - name: Install System-Level Console Redirector
-        run: |
-          # Script that attaches disconnected RDP sessions directly to local virtual console
+          # Create script that attaches disconnected sessions directly to local console
           $scriptContent = @"
           while (`$true) {
               `$sessions = qwinsta
@@ -160,6 +131,6 @@ jobs:
 
           # Keep runner active indefinitely
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active & Virtual Display Active..."
+              Write-Host "[$(Get-Date)] RDP Active & Live Stream Watcher Running..."
               Start-Sleep -Seconds 300
           }
