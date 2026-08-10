@@ -21,19 +21,21 @@ jobs:
 
       - name: Install Chrome & Chrome Remote Desktop Host
         run: |
-          # Install Chrome Remote Desktop Service
-          $crdUrl = "https://dl.google.com/remotedesktop/chromeremotedesktophost.msi"
-          $crdMsi = "$env:TEMP\crd.msi"
-          Invoke-WebRequest -Uri $crdUrl -OutFile $crdMsi
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$crdMsi`"", "/quiet", "/norestart" -Wait
-          Remove-Item $crdMsi -Force
+          # Updated Chrome Remote Desktop MSI URL
+          $crdUrl = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
+          $crdMsi = "$env:TEMP\chromeremotedesktophost.msi"
 
-          # Install Google Chrome Browser
+          # Download and install CRD Host
+          Invoke-WebRequest -Uri $crdUrl -OutFile $crdMsi -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$crdMsi`"", "/quiet", "/norestart" -Wait
+          Remove-Item $crdMsi -Force -ErrorAction SilentlyContinue
+
+          # Install Standalone Google Chrome Browser
           $chromeUrl = "https://dl.google.com/chrome/install/standalonesetup64.exe"
-          $chromeExe = "$env:TEMP\chrome.exe"
-          Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeExe
+          $chromeExe = "$env:TEMP\chrome_installer.exe"
+          Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeExe -UseBasicParsing
           Start-Process $chromeExe -ArgumentList "/silent", "/install" -Wait
-          Remove-Item $chromeExe -Force
+          Remove-Item $chromeExe -Force -ErrorAction SilentlyContinue
 
       - name: Register & Start Chrome Remote Desktop
         run: |
@@ -41,7 +43,7 @@ jobs:
           $pin = "${{ secrets.CRD_PIN }}"
           
           if (-not $authCode) {
-              Write-Error "CRD_CODE secret is missing! Please add it in Repository Settings -> Secrets -> Actions."
+              Write-Error "CRD_CODE secret is missing! Please update CRD_CODE in Repository Settings -> Secrets."
               exit 1
           }
 
