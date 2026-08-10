@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Core RDP & Display Settings
         run: |
           # Enable Remote Desktop safely
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -17,10 +17,15 @@ jobs:
           # Allow RDP through Windows Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
+          # Disable monitor timeout and power savings (Prevents black screen / frozen stream)
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change standby-timeout-ac 0
+          powercfg /change disk-timeout-ac 0
+
           # Restart Remote Desktop Service
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User and Set Session Retention Keys
+      - name: Create RDP User & Configure Permanent Session Display
         run: |
           $userName = "Abi Cloud PC"
           $password = "${{ secrets.RDP_PASSWORD }}"
@@ -40,16 +45,48 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $userName
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName
           
-          # 3. Add Registry Keys to prevent disconnect / logoff termination
+          # 3. Add Registry Keys to prevent session termination & logoff
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fResetBroken" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fReconnectSame" -Value 1 -Force
 
-          # 4. Apply Group Policies for infinite session duration
+          # 4. Disable Lock Screen and Screen Saver (Fixes black screen on YouTube Live)
+          $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+          if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
+          Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
+
+          # 5. Apply Group Policies for infinite session duration
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
           Set-ItemProperty -Path $tsPath -Name "MaxIdleTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
+
+      - name: Install System-Level Console Redirector (Stream Keep-Alive)
+        run: |
+          # Create script that attaches disconnected sessions directly to local console
+          $scriptContent = @"
+          while (`$true) {
+              `$sessions = qwinsta
+              foreach (`$line in `$sessions) {
+                  if (`$line -match "Disc" -and `$line -match "(\d+)") {
+                      `$sessionId = `$matches[1]
+                      tscon `$sessionId /dest:console /a 2>`$null
+                  }
+              }
+              Start-Sleep -Seconds 3
+          }
+          "@
+          
+          $scriptPath = "C:\KeepLiveAlive.ps1"
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8
+
+          # Register as a SYSTEM Scheduled Task (Runs with full OS privileges even when user disconnects)
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
+          $trigger = New-ScheduledTaskTrigger -AtStartup
+          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          
+          Register-ScheduledTask -TaskName "KeepLiveAlive" -Action $action -Trigger $trigger -Principal $principal -Force
+          Start-ScheduledTask -TaskName "KeepLiveAlive"
 
       - name: Install Tailscale
         run: |
@@ -84,7 +121,7 @@ jobs:
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Maintain Connection & Keep Active
+      - name: Maintain Active Runner Loop
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
@@ -92,22 +129,8 @@ jobs:
           Write-Host "Password: [HIDDEN BY GITHUB LOG MASKING]"
           Write-Host "==================`n"
 
-          # Start a background job to route disconnected sessions back to console automatically
-          Start-Job -ScriptBlock {
-              while ($true) {
-                  $sessions = qwinsta
-                  foreach ($line in $sessions) {
-                      if ($line -match "Disc" -and $line -match "(\d+)") {
-                          $sessionId = $matches[1]
-                          tscon $sessionId /dest:console /a 2>$null
-                      }
-                  }
-                  Start-Sleep -Seconds 10
-              }
-          } | Out-Null
-
-          # Keep runner active indefinitely (or until manually cancelled)
+          # Keep runner active indefinitely
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date)] RDP Active & Live Stream Watcher Running..."
               Start-Sleep -Seconds 300
           }
