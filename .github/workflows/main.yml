@@ -63,20 +63,31 @@ jobs:
 
       - name: Install Virtual Display Driver (Fixes Black Screen on Live Stream)
         run: |
-          # Download and install Amyuni Virtual Display Driver to keep active display canvas in headless mode
           $driverUrl = "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
           $driverZip = "$env:TEMP\usbmmidd.zip"
           $driverDir = "C:\VirtualDisplay"
           
+          # 1. Download and Extract
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
           Invoke-WebRequest -Uri $driverUrl -OutFile $driverZip
           Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force
           
-          # Enable Virtual Monitor
-          Set-Location $driverDir
-          .\deviceinstaller64.exe enableidd 1
+          # 2. Locate deviceinstaller64.exe dynamically (Fixes nested path issue)
+          $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
           
-          # Force Windows registry to keep 1080p rendering active for headless session
+          if (-not $installer) {
+              Write-Error "deviceinstaller64.exe was not found after extraction."
+              exit 1
+          }
+
+          $installerDir = $installer.DirectoryName
+          Set-Location $installerDir
+          
+          # 3. Install driver and enable virtual monitor
+          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
+          & .\deviceinstaller64.exe enableidd 1
+          
+          # 4. Set registry flags for active headless rendering
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name "AutoAdminLogon" -Value "0" -Force
 
       - name: Install System-Level Console Redirector
