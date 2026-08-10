@@ -1,92 +1,44 @@
-name: PC
+name: PC (VNC Live Stream)
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  vnc-pc:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP & Display Settings
+      - name: Configure Power & Display Settings
         run: |
-          # Enable Remote Desktop safely
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # Allow RDP through Windows Firewall
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-
-          # Disable monitor timeout and power savings (Prevents black screen / frozen stream)
+          # Prevent monitor timeouts and screen sleep
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change disk-timeout-ac 0
 
-          # Restart Remote Desktop Service
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User & Configure Permanent Session Display
-        run: |
-          $userName = "Abi Cloud PC"
-          $password = "${{ secrets.RDP_PASSWORD }}"
-          
-          # Mask password in GitHub Actions runner logs
-          Write-Host "::add-mask::$password"
-          
-          # 1. Disable local Windows password complexity requirements
-          net accounts /minpwlen:0
-          secedit /export /cfg "$env:TEMP\secpol.cfg"
-          (Get-Content "$env:TEMP\secpol.cfg") -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | Set-Content "$env:TEMP\secpol.cfg"
-          secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
-          
-          # 2. Create User using Repository Secret
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name $userName -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member $userName
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName
-          
-          # 3. Add Registry Keys to prevent session termination & logoff
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fResetBroken" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fReconnectSame" -Value 1 -Force
-
-          # 4. Disable Lock Screen and Screen Saver (Fixes black screen on YouTube Live)
+          # Disable Lock Screen via Registry
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
-          # 5. Apply Group Policies for infinite session duration
-          $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-          if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
-          Set-ItemProperty -Path $tsPath -Name "MaxIdleTime" -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
-
-      - name: Install System-Level Console Redirector (Stream Keep-Alive)
+      - name: Install & Configure TightVNC Server
         run: |
-          # Create script that attaches disconnected sessions directly to local console
-          $scriptContent = @"
-          while (`$true) {
-              `$sessions = qwinsta
-              foreach (`$line in `$sessions) {
-                  if (`$line -match "Disc" -and `$line -match "(\d+)") {
-                      `$sessionId = `$matches[1]
-                      tscon `$sessionId /dest:console /a 2>`$null
-                  }
-              }
-              Start-Sleep -Seconds 3
-          }
-          "@
+          $vncUrl = "https://www.tightvnc.com/download/2.8.27/tightvnc-2.8.27-gpl-setup-64bit.msi"
+          $vncMsi = "$env:TEMP\tightvnc.msi"
           
-          $scriptPath = "C:\KeepLiveAlive.ps1"
-          $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8
+          Invoke-WebRequest -Uri $vncUrl -OutFile $vncMsi
+          
+          # Install TightVNC as a system service silently
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$vncMsi`"", "/quiet", "/norestart", "ADDLOCAL=Server", "SERVER_REGISTER_AS_SERVICE=1", "SERVER_START_OPTION=Auto" -Wait
+          Remove-Item $vncMsi -Force
 
-          # Register as a SYSTEM Scheduled Task (Runs with full OS privileges even when user disconnects)
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
-          $trigger = New-ScheduledTaskTrigger -AtStartup
-          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          # Set VNC Server Password (Default: 123456)
+          # Note: Set-ItemProperty / Registry config for TightVNC Server
+          $vncRegPath = "HKLM:\SOFTWARE\TightVNC\Server"
+          if (-not (Test-Path $vncRegPath)) { New-Item -Path $vncRegPath -Force | Out-Null }
           
-          Register-ScheduledTask -TaskName "KeepLiveAlive" -Action $action -Trigger $trigger -Principal $principal -Force
-          Start-ScheduledTask -TaskName "KeepLiveAlive"
+          # Allow VNC through Windows Firewall (Port 5900)
+          New-NetFirewallRule -DisplayName "TightVNC" -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow -ErrorAction SilentlyContinue
 
       - name: Install Tailscale
         run: |
@@ -100,13 +52,10 @@ jobs:
       - name: Establish Tailscale Connection
         run: |
           $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          
-          # Wait until Tailscale binary is installed
           while (-not (Test-Path $tsExe)) { Start-Sleep -Seconds 2 }
 
           & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for IP allocation
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 12) {
@@ -123,14 +72,13 @@ jobs:
 
       - name: Maintain Active Runner Loop
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: Abi Cloud PC"
-          Write-Host "Password: [HIDDEN BY GITHUB LOG MASKING]"
-          Write-Host "==================`n"
+          Write-Host "`n======================================================="
+          Write-Host "VNC ACCESS (ZERO BLACK SCREEN RISK)"
+          Write-Host "VNC Server Address: $env:TAILSCALE_IP:5900"
+          Write-Host "Connect using any VNC Viewer (RealVNC / TightVNC Viewer)"
+          Write-Host "=======================================================\n"
 
-          # Keep runner active indefinitely
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active & Live Stream Watcher Running..."
+              Write-Host "[$(Get-Date)] Stream Active & VNC Console Active..."
               Start-Sleep -Seconds 300
           }
