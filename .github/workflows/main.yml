@@ -1,15 +1,15 @@
-name: PC (VNC Live Stream)
+name: PC (RustDesk Streamer)
 
 on:
   workflow_dispatch:
 
 jobs:
-  vnc-pc:
+  rustdesk-pc:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Power & Display Settings
+      - name: Disable Display Sleep & Screen Lock
         run: |
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
@@ -19,91 +19,57 @@ jobs:
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
-      - name: Install & Configure TightVNC Server
+      - name: Install RustDesk
         run: |
-          $vncUrl = "https://www.tightvnc.com/download/2.8.27/tightvnc-2.8.27-gpl-setup-64bit.msi"
-          $vncMsi = "$env:TEMP\tightvnc.msi"
+          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.3.0/rustdesk-1.3.0-x86_64.exe"
+          $exe = "$env:TEMP\rustdesk.exe"
           
-          Invoke-WebRequest -Uri $vncUrl -OutFile $vncMsi
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$vncMsi`"", "/quiet", "/norestart", "ADDLOCAL=Server", "SERVER_REGISTER_AS_SERVICE=1", "SERVER_START_OPTION=Auto" -Wait
-          Remove-Item $vncMsi -Force
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          
+          # Install RustDesk Service
+          Start-Process $exe -ArgumentList "--silent-install" -Wait
+          
+          # Allow RustDesk through Windows Firewall
+          New-NetFirewallRule -DisplayName "RustDesk" -Direction Inbound -Program "C:\Program Files\RustDesk\rustdesk.exe" -Action Allow -ErrorAction SilentlyContinue
 
-          $plainPassword = "${{ secrets.VNC_PASSWORD }}"
-          if (-not $plainPassword) { $plainPassword = "123456" }
-
-          if ($plainPassword.Length -gt 8) {
-              $plainPassword = $plainPassword.Substring(0, 8)
-          } else {
-              $plainPassword = $plainPassword.PadRight(8, "`0")
-          }
-
-          [byte[]]$key = 0xE8, 0x4A, 0xD6, 0x60, 0xC4, 0x72, 0x1A, 0x00
-          [byte[]]$passBytes = [System.Text.Encoding]::ASCII.GetBytes($plainPassword)
-
-          for ($i = 0; $i -lt 8; $i++) {
-              $b = $passBytes[$i]
-              $b = (($b -band 0xF0) -shr 4) -bor (($b -band 0x0F) -shl 4)
-              $b = (($b -band 0xCC) -shr 2) -bor (($b -band 0x33) -shl 2)
-              $b = (($b -band 0xAA) -shr 1) -bor (($b -band 0x55) -shl 1)
-              $passBytes[$i] = $b
-          }
-
-          $des = [System.Security.Cryptography.DES]::Create()
-          $des.Mode = [System.Security.Cryptography.CipherMode]::ECB
-          $des.Padding = [System.Security.Cryptography.PaddingMode]::None
-          $des.Key = $key
-          $encryptor = $des.CreateEncryptor()
-          [byte[]]$encPass = $encryptor.TransformFinalBlock($passBytes, 0, 8)
-
-          $vncRegPath = "HKLM:\SOFTWARE\TightVNC\Server"
-          if (-not (Test-Path $vncRegPath)) { New-Item -Path $vncRegPath -Force | Out-Null }
-          Set-ItemProperty -Path $vncRegPath -Name "Password" -Value $encPass -Type Binary -Force
-          Set-ItemProperty -Path $vncRegPath -Name "ControlPassword" -Value $encPass -Type Binary -Force
-
-          New-NetFirewallRule -DisplayName "TightVNC" -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow -ErrorAction SilentlyContinue
-          Restart-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
-
-      - name: Install & Start Tailscale
+      - name: Configure RustDesk Password & Fetch ID
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          $rustDeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-
-          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          while (-not (Test-Path $tsExe)) { Start-Sleep -Seconds 2 }
-
-          # Authenticate with Tailscale
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-
-      - name: Maintain Active Runner Loop & Output Connection Info
-        run: |
-          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          $tsIP = ""
+          # Get password from repository secret or default to 123456
+          $password = "${{ secrets.RUSTDESK_PASSWORD }}"
+          if (-not $password) { $password = "123456" }
           
-          # Retry loop directly in the main step until IP is retrieved
-          for ($i = 1; $i -le 15; $i++) {
+          # Set static password in RustDesk service
+          & $rustDeskExe --password $password
+          
+          # Wait for RustDesk service to initialize and register ID
+          $rustdeskId = ""
+          for ($i = 1; $i -le 10; $i++) {
               Start-Sleep -Seconds 3
-              $tsIP = (& $tsExe ip -4).Trim()
-              if ($tsIP -and $tsIP -match "^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$") {
+              $rustdeskId = (& $rustDeskExe --get-id).Trim()
+              if ($rustdeskId -and $rustdeskId -match "^\d+$") {
                   break
               }
           }
 
-          if (-not $tsIP) {
-              Write-Error "Could not retrieve Tailscale IP. Check if TAILSCALE_AUTH_KEY is valid or expired."
+          if (-not $rustdeskId) {
+              Write-Error "Failed to retrieve RustDesk ID."
               exit 1
           }
 
           Write-Host "`n======================================================="
-          Write-Host "VNC ACCESS (ZERO BLACK SCREEN RISK)"
-          Write-Host "VNC Address : $tsIP:5900"
-          Write-Host "VNC Password: (Protected by repository secret VNC_PASSWORD)"
+          Write-Host "RUSTDESK ACCESS (ZERO BLACK SCREEN RISK)"
+          Write-Host "RustDesk ID : $rustdeskId"
+          Write-Host "Password    : [PROTECTED BY RUSTDESK_PASSWORD SECRET]"
           Write-Host "=======================================================\n"
 
+          # Store ID in log context for easy reference
+          echo "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_ENV
+
+      - name: Maintain Active Runner Loop
+        run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] VNC Active at ${tsIP}:5900 - Stream is live!"
+              Write-Host "[$(Get-Date)] RustDesk Active - Stream is live continuously!"
               Start-Sleep -Seconds 300
           }
