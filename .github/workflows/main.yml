@@ -1,15 +1,15 @@
-name: PC (RustDesk Streamer)
+name: PC (Chrome Remote Desktop)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rustdesk-pc:
+  crd-pc:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Disable Display Sleep & Screen Lock
+      - name: Disable Power Off & Screen Saver
         run: |
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
@@ -19,84 +19,48 @@ jobs:
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
-      - name: Download & Install RustDesk
+      - name: Install Chrome & Chrome Remote Desktop Host
         run: |
-          $msiUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.0/rustdesk-1.3.0-x86_64.msi"
-          $msiPath = "$env:TEMP\rustdesk.msi"
-          
-          Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath
-          
-          # Silent MSI installation
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $msiPath -Force
+          # Install Chrome Remote Desktop Service
+          $crdUrl = "https://dl.google.com/remotedesktop/chromeremotedesktophost.msi"
+          $crdMsi = "$env:TEMP\crd.msi"
+          Invoke-WebRequest -Uri $crdUrl -OutFile $crdMsi
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$crdMsi`"", "/quiet", "/norestart" -Wait
+          Remove-Item $crdMsi -Force
 
-          # Firewall Rule
-          New-NetFirewallRule -DisplayName "RustDesk" -Direction Inbound -Program "C:\Program Files\RustDesk\rustdesk.exe" -Action Allow -ErrorAction SilentlyContinue
+          # Install Google Chrome Browser
+          $chromeUrl = "https://dl.google.com/chrome/install/standalonesetup64.exe"
+          $chromeExe = "$env:TEMP\chrome.exe"
+          Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeExe
+          Start-Process $chromeExe -ArgumentList "/silent", "/install" -Wait
+          Remove-Item $chromeExe -Force
 
-      - name: Start RustDesk, Set Password & Read ID
+      - name: Register & Start Chrome Remote Desktop
         run: |
-          $rustDeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
+          $authCode = "${{ secrets.CRD_CODE }}"
+          $pin = "${{ secrets.CRD_PIN }}"
           
-          # Get password from repository secret or default to 123456
-          $password = "${{ secrets.RUSTDESK_PASSWORD }}"
-          if (-not $password) { $password = "123456" }
-
-          # Ensure RustDesk service is started
-          Start-Service -Name "rustdesk" -ErrorAction SilentlyContinue
-          
-          # Set password via command line
-          Start-Process -FilePath $rustDeskExe -ArgumentList "--password", "$password" -NoNewWindow -Wait
-          
-          Start-Sleep -Seconds 5
-
-          # Paths where RustDesk stores config files
-          $configPaths = @(
-              "$env:SystemRoot\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk2.toml",
-              "$env:SystemRoot\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml",
-              "$env:APPDATA\RustDesk\config\RustDesk2.toml",
-              "$env:APPDATA\RustDesk\config\RustDesk.toml"
-          )
-
-          $rustdeskId = ""
-
-          # Try reading config file directly
-          for ($retry = 1; $retry -le 10; $retry++) {
-              foreach ($path in $configPaths) {
-                  if (Test-Path $path) {
-                      $content = Get-Content $path -Raw -ErrorAction SilentlyContinue
-                      if ($content -match 'id\s*=\s*"?(\d+)"?') {
-                          $rustdeskId = $matches[1]
-                          break
-                      }
-                  }
-              }
-
-              if ($rustdeskId) { break }
-
-              # Fallback attempt using CLI
-              $cliId = (& $rustDeskExe --get-id 2>$null)
-              if ($cliId -and $cliId -match "\d+") {
-                  $rustdeskId = ($cliId -replace '\D', '').Trim()
-                  break
-              }
-
-              Start-Sleep -Seconds 3
-          }
-
-          if (-not $rustdeskId) {
-              Write-Error "Failed to retrieve RustDesk ID. Service did not generate configuration."
+          if (-not $authCode) {
+              Write-Error "CRD_CODE secret is missing! Please add it in Repository Settings -> Secrets -> Actions."
               exit 1
           }
 
-          Write-Host "`n======================================================="
-          Write-Host "RUSTDESK ACCESS (ZERO BLACK SCREEN RISK)"
-          Write-Host "RustDesk ID : $rustdeskId"
-          Write-Host "Password    : [PROTECTED BY RUSTDESK_PASSWORD SECRET]"
-          Write-Host "=======================================================\n"
+          if (-not $pin) {
+              $pin = "123456"
+          }
+
+          # Execute registration command with secret PIN
+          Invoke-Expression "$authCode --pin=$pin"
 
       - name: Maintain Active Runner Loop
         run: |
+          Write-Host "`n======================================================="
+          Write-Host "Chrome Remote Desktop Active!"
+          Write-Host "Connect at: https://remotedesktop.google.com/access"
+          Write-Host "PIN: [PROTECTED BY CRD_PIN SECRET]"
+          Write-Host "=======================================================\n"
+
           while ($true) {
-              Write-Host "[$(Get-Date)] RustDesk Active - Stream running continuously!"
+              Write-Host "[$(Get-Date)] CRD Active - Zero Black Screen Risk!"
               Start-Sleep -Seconds 300
           }
