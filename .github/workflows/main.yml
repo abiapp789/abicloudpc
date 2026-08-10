@@ -11,12 +11,10 @@ jobs:
     steps:
       - name: Configure Power & Display Settings
         run: |
-          # Prevent monitor timeouts and screen sleep
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change disk-timeout-ac 0
 
-          # Disable Lock Screen via Registry
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
@@ -27,28 +25,21 @@ jobs:
           $vncMsi = "$env:TEMP\tightvnc.msi"
           
           Invoke-WebRequest -Uri $vncUrl -OutFile $vncMsi
-          
-          # Install TightVNC as a system service
           Start-Process msiexec.exe -ArgumentList "/i", "`"$vncMsi`"", "/quiet", "/norestart", "ADDLOCAL=Server", "SERVER_REGISTER_AS_SERVICE=1", "SERVER_START_OPTION=Auto" -Wait
           Remove-Item $vncMsi -Force
 
-          # Set VNC Password dynamically from GitHub Secret
           $plainPassword = "${{ secrets.VNC_PASSWORD }}"
-          
-          # Truncate or pad password to exact 8 characters for VNC DES key requirement
+          if (-not $plainPassword) { $plainPassword = "123456" }
+
           if ($plainPassword.Length -gt 8) {
               $plainPassword = $plainPassword.Substring(0, 8)
           } else {
               $plainPassword = $plainPassword.PadRight(8, "`0")
           }
 
-          # VNC DES fixed key
           [byte[]]$key = 0xE8, 0x4A, 0xD6, 0x60, 0xC4, 0x72, 0x1A, 0x00
-          
-          # Convert string characters to bytes
           [byte[]]$passBytes = [System.Text.Encoding]::ASCII.GetBytes($plainPassword)
 
-          # Simple bit reverse per byte required by VNC DES implementation
           for ($i = 0; $i -lt 8; $i++) {
               $b = $passBytes[$i]
               $b = (($b -band 0xF0) -shr 4) -bor (($b -band 0x0F) -shl 4)
@@ -57,7 +48,6 @@ jobs:
               $passBytes[$i] = $b
           }
 
-          # Encrypt password using DES ECB mode
           $des = [System.Security.Cryptography.DES]::Create()
           $des.Mode = [System.Security.Cryptography.CipherMode]::ECB
           $des.Padding = [System.Security.Cryptography.PaddingMode]::None
@@ -65,19 +55,15 @@ jobs:
           $encryptor = $des.CreateEncryptor()
           [byte[]]$encPass = $encryptor.TransformFinalBlock($passBytes, 0, 8)
 
-          # Save to registry
           $vncRegPath = "HKLM:\SOFTWARE\TightVNC\Server"
           if (-not (Test-Path $vncRegPath)) { New-Item -Path $vncRegPath -Force | Out-Null }
           Set-ItemProperty -Path $vncRegPath -Name "Password" -Value $encPass -Type Binary -Force
           Set-ItemProperty -Path $vncRegPath -Name "ControlPassword" -Value $encPass -Type Binary -Force
 
-          # Allow VNC through Windows Firewall (Port 5900)
           New-NetFirewallRule -DisplayName "TightVNC" -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow -ErrorAction SilentlyContinue
-
-          # Restart VNC Service to apply password settings
           Restart-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
 
-      - name: Install Tailscale
+      - name: Install & Start Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -86,38 +72,38 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
-        run: |
           $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
           while (-not (Test-Path $tsExe)) { Start-Sleep -Seconds 2 }
 
+          # Authenticate with Tailscale
           & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+      - name: Maintain Active Runner Loop & Output Connection Info
+        run: |
+          $tsExe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $tsIP = ""
           
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 15) {
-              Start-Sleep -Seconds 4
-              $tsIP = & $tsExe ip -4
-              $retries++
+          # Retry loop directly in the main step until IP is retrieved
+          for ($i = 1; $i -le 15; $i++) {
+              Start-Sleep -Seconds 3
+              $tsIP = (& $tsExe ip -4).Trim()
+              if ($tsIP -and $tsIP -match "^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$") {
+                  break
+              }
           }
-          
+
           if (-not $tsIP) {
-              Write-Error "Tailscale IP assignment timed out. Check TAILSCALE_AUTH_KEY in repository secrets."
+              Write-Error "Could not retrieve Tailscale IP. Check if TAILSCALE_AUTH_KEY is valid or expired."
               exit 1
           }
-          
-          # Pass variable to GitHub Actions Environment
-          "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Maintain Active Runner Loop
-        run: |
           Write-Host "`n======================================================="
           Write-Host "VNC ACCESS (ZERO BLACK SCREEN RISK)"
-          Write-Host "VNC Address : $env:TAILSCALE_IP:5900"
+          Write-Host "VNC Address : $tsIP:5900"
           Write-Host "VNC Password: (Protected by repository secret VNC_PASSWORD)"
           Write-Host "=======================================================\n"
 
           while ($true) {
-              Write-Host "[$(Get-Date)] VNC Active at $env:TAILSCALE_IP:5900 - Stream is live!"
+              Write-Host "[$(Get-Date)] VNC Active at ${tsIP}:5900 - Stream is live!"
               Start-Sleep -Seconds 300
           }
