@@ -21,11 +21,10 @@ jobs:
 
       - name: Install Chrome & Chrome Remote Desktop Host
         run: |
-          # Updated Chrome Remote Desktop MSI URL
+          # Download and install CRD Host
           $crdUrl = "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi"
           $crdMsi = "$env:TEMP\chromeremotedesktophost.msi"
 
-          # Download and install CRD Host
           Invoke-WebRequest -Uri $crdUrl -OutFile $crdMsi -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i", "`"$crdMsi`"", "/quiet", "/norestart" -Wait
           Remove-Item $crdMsi -Force -ErrorAction SilentlyContinue
@@ -38,28 +37,21 @@ jobs:
           Remove-Item $chromeExe -Force -ErrorAction SilentlyContinue
 
       - name: Register & Start Chrome Remote Desktop
+        shell: cmd
+        env:
+          CRD_COMMAND: ${{ secrets.CRD_CODE }}
+          CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
-          $authCode = "${{ secrets.CRD_CODE }}"
-          $pin = "${{ secrets.CRD_PIN }}"
+          if "%CRD_PIN%"=="" (set CRD_PIN=123456)
           
-          if (-not $authCode) {
-              Write-Error "CRD_CODE secret is missing! Please update CRD_CODE in Repository Settings -> Secrets."
-              exit 1
-          }
-
-          if (-not $pin) {
-              $pin = "123456"
-          }
-
-          # Execute registration command with secret PIN
-          Invoke-Expression "$authCode --pin=$pin"
+          echo Registering Chrome Remote Desktop Host...
+          %CRD_COMMAND% --pin=%CRD_PIN%
 
       - name: Maintain Active Runner Loop
         run: |
           Write-Host "`n======================================================="
           Write-Host "Chrome Remote Desktop Active!"
           Write-Host "Connect at: https://remotedesktop.google.com/access"
-          Write-Host "PIN: [PROTECTED BY CRD_PIN SECRET]"
           Write-Host "=======================================================\n"
 
           while ($true) {
