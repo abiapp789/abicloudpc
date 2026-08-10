@@ -19,42 +19,46 @@ jobs:
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
-      - name: Install RustDesk
+      - name: Download & Install RustDesk Service
         run: |
-          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.3.0/rustdesk-1.3.0-x86_64.exe"
-          $exe = "$env:TEMP\rustdesk.exe"
+          $msiUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.0/rustdesk-1.3.0-x86_64.msi"
+          $msiPath = "$env:TEMP\rustdesk.msi"
           
-          Invoke-WebRequest -Uri $url -OutFile $exe
+          Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath
           
-          # Install RustDesk Service
-          Start-Process $exe -ArgumentList "--silent-install" -Wait
-          
+          # Silent MSI installation avoids background process hangs
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $msiPath -Force
+
           # Allow RustDesk through Windows Firewall
           New-NetFirewallRule -DisplayName "RustDesk" -Direction Inbound -Program "C:\Program Files\RustDesk\rustdesk.exe" -Action Allow -ErrorAction SilentlyContinue
 
-      - name: Configure RustDesk Password & Fetch ID
+      - name: Start RustDesk Service, Set Password & Output ID
         run: |
           $rustDeskExe = "C:\Program Files\RustDesk\rustdesk.exe"
           
           # Get password from repository secret or default to 123456
           $password = "${{ secrets.RUSTDESK_PASSWORD }}"
           if (-not $password) { $password = "123456" }
+
+          # Ensure RustDesk Windows Service is running
+          Start-Service -Name "rustdesk" -ErrorAction SilentlyContinue
           
-          # Set static password in RustDesk service
-          & $rustDeskExe --password $password
+          # Set static password
+          Start-Process -FilePath $rustDeskExe -ArgumentList "--password", "$password" -NoNewWindow -Wait
           
-          # Wait for RustDesk service to initialize and register ID
+          # Poll until RustDesk generates and registers its public ID
           $rustdeskId = ""
-          for ($i = 1; $i -le 10; $i++) {
-              Start-Sleep -Seconds 3
-              $rustdeskId = (& $rustDeskExe --get-id).Trim()
+          for ($i = 1; $i -le 12; $i++) {
+              Start-Sleep -Seconds 5
+              $rustdeskId = (& $rustDeskExe --get-id 2>$null).Trim()
               if ($rustdeskId -and $rustdeskId -match "^\d+$") {
                   break
               }
           }
 
           if (-not $rustdeskId) {
-              Write-Error "Failed to retrieve RustDesk ID."
+              Write-Error "Failed to retrieve RustDesk ID. RustDesk service did not assign an ID."
               exit 1
           }
 
@@ -64,12 +68,9 @@ jobs:
           Write-Host "Password    : [PROTECTED BY RUSTDESK_PASSWORD SECRET]"
           Write-Host "=======================================================\n"
 
-          # Store ID in log context for easy reference
-          echo "RUSTDESK_ID=$rustdeskId" >> $env:GITHUB_ENV
-
       - name: Maintain Active Runner Loop
         run: |
           while ($true) {
-              Write-Host "[$(Get-Date)] RustDesk Active - Stream is live continuously!"
+              Write-Host "[$(Get-Date)] RustDesk Active - Stream running continuously!"
               Start-Sleep -Seconds 300
           }
