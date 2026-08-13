@@ -105,9 +105,9 @@ jobs:
               }
           }
 
-          # --- 2. Install ScreenCaptureRecorder (Virtual Audio/Video Device) ---
+          # --- 2. Install ScreenCaptureRecorder v0.13.3 (Virtual Audio/Video Device) ---
           try {
-              $scrUrl = "https://github.com/rdp/screen-capture-recorder-to-video-windows-free/releases/download/v0.12.10/ScreenCaptureRecorder-x64-v0.12.10.exe"
+              $scrUrl = "https://github.com/rdp/screen-capture-recorder-to-video-windows-free/releases/download/v0.13.3/Setup.Screen.Capturer.Recorder.v0.13.3.exe"
               $scrInstaller = "$env:TEMP\scr_setup.exe"
               
               [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -118,6 +118,7 @@ jobs:
               Write-Host "Virtual Audio Device successfully registered."
           } catch {
               Write-Warning "Failed installing ScreenCaptureRecorder: $($_.Exception.Message)"
+          }
           }
 
       - name: Install OBS Studio & Zoom
