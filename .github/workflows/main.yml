@@ -115,48 +115,47 @@ jobs:
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
 
-          # Headless silent MSI installation (/qn prevents UI prompts)
-          $msiArgs = @(
-              "/i", "`"$installerPath`"",
-              "/qn",
-              "/norestart",
-              "/log", "`"$env:TEMP\tailscale_install.log`""
-          )
-          $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
-          
-          if ($process.ExitCode -ne 0) {
-              Write-Error "MSI Installation failed with exit code $($process.ExitCode)"
-              Get-Content "$env:TEMP\tailscale_install.log" -Tail 20
-              exit 1
-          }
-
+          # Headless silent MSI installation
+          $process = Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/qn", "/norestart" -Wait -PassThru
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-          # Locate Tailscale CLI
-          $tsExe = Get-ChildItem -Path "$env:ProgramFiles\Tailscale" -Recurse -Filter "tailscale.exe" | Select-Object -ExpandProperty FullName -First 1
+          # Explicit binary path resolution (default Tailscale installation path)
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           
-          if (-not $tsExe) {
-              Write-Error "Tailscale executable was not found."
+          # Poll until the executable is available on disk
+          $timeout = 0
+          while (-not (Test-Path $tsExe) -and $timeout -lt 30) {
+              Start-Sleep -Seconds 2
+              $timeout += 2
+          }
+
+          if (-not (Test-Path $tsExe)) {
+              Write-Error "Tailscale executable was not found at $tsExe after installation."
               exit 1
           }
 
-          # Non-interactive login
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --unattended
-          
-          # Query assigned Tailscale IP
+          # Ensure the Tailscale service is running
+          Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          # Connect Tailscale non-interactively
+          & "$tsExe" up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-runner-$env:GITHUB_RUN_ID" --unattended
+
+          # Poll for Tailscale IPv4 address
           $tsIP = ""
           for ($i = 1; $i -le 15; $i++) {
-              $tsIP = (& $tsExe ip -4 2>$null).Trim()
+              $tsIP = (& "$tsExe" ip -4 2>$null).Trim()
               if ($tsIP -and $tsIP -match "^\d+\.\d+\.\d+\.\d+$") { break }
-              Start-Sleep -Seconds 4
+              Start-Sleep -Seconds 3
           }
 
           if (-not $tsIP) {
-              Write-Error "Tailscale IP assignment timed out. Check if TAILSCALE_AUTH_KEY secret is valid."
+              Write-Error "Tailscale IP assignment timed out. Check if TAILSCALE_AUTH_KEY is valid and reusable."
               exit 1
           }
 
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP assigned successfully: $tsIP"
+          "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Maintain Active Runner Loop
         run: |
