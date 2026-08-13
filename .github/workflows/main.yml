@@ -119,7 +119,6 @@ jobs:
           } catch {
               Write-Warning "Failed installing ScreenCaptureRecorder: $($_.Exception.Message)"
           }
-          }
 
       - name: Install OBS Studio & Zoom
         run: |
