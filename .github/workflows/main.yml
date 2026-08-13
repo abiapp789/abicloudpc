@@ -111,10 +111,28 @@ jobs:
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
+          # Force TLS 1.2 download
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+
+          # Headless silent MSI installation (/qn prevents UI prompts)
+          $msiArgs = @(
+              "/i", "`"$installerPath`"",
+              "/qn",
+              "/norestart",
+              "/log", "`"$env:TEMP\tailscale_install.log`""
+          )
+          $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
+          
+          if ($process.ExitCode -ne 0) {
+              Write-Error "MSI Installation failed with exit code $($process.ExitCode)"
+              Get-Content "$env:TEMP\tailscale_install.log" -Tail 20
+              exit 1
+          }
+
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
+          # Locate Tailscale CLI
           $tsExe = Get-ChildItem -Path "$env:ProgramFiles\Tailscale" -Recurse -Filter "tailscale.exe" | Select-Object -ExpandProperty FullName -First 1
           
           if (-not $tsExe) {
@@ -122,17 +140,19 @@ jobs:
               exit 1
           }
 
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Non-interactive login
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --unattended
           
+          # Query assigned Tailscale IP
           $tsIP = ""
-          for ($i = 1; $i -le 12; $i++) {
+          for ($i = 1; $i -le 15; $i++) {
               $tsIP = (& $tsExe ip -4 2>$null).Trim()
               if ($tsIP -and $tsIP -match "^\d+\.\d+\.\d+\.\d+$") { break }
-              Start-Sleep -Seconds 5
+              Start-Sleep -Seconds 4
           }
 
           if (-not $tsIP) {
-              Write-Error "Tailscale IP assignment timed out."
+              Write-Error "Tailscale IP assignment timed out. Check if TAILSCALE_AUTH_KEY secret is valid."
               exit 1
           }
 
