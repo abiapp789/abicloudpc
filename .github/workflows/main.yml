@@ -21,7 +21,11 @@ jobs:
           # 3. Enable RDP Audio Redirection in Registry
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCam" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableAudioCapture" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name "fDisableAudioCapture" -Value 0 -PropertyType DWord -Force
+          
+          # Ensure registry policy path exists first
+          $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
+          Set-ItemProperty -Path $policyPath -Name "fDisableAudioCapture" -Value 0 -Type DWord -Force
           
           # Enable Windows Audio Services
           Set-Service -Name "AudioSrv" -StartupType Automatic
