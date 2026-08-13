@@ -63,12 +63,37 @@ jobs:
 
       - name: Install Virtual Driver & Set Active Resolution
         run: |
-          $driverUrl = "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
           $driverZip = "$env:TEMP\usbmmidd.zip"
           $driverDir = "C:\VirtualDisplay"
           
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
-          Invoke-WebRequest -Uri $driverUrl -OutFile $driverZip -UseBasicParsing
+          
+          # Direct URLs with GitHub raw fallback mirror
+          $urls = @(
+              "https://raw.githubusercontent.com/roshkins/IddSampleDriver/main/usbmmidd_v2.zip",
+              "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
+          )
+          
+          $downloadSuccess = $false
+          foreach ($url in $urls) {
+              try {
+                  Write-Host "Attempting download from $url..."
+                  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                  Invoke-WebRequest -Uri $url -OutFile $driverZip -UseBasicParsing -TimeoutSec 30
+                  if ((Test-Path $driverZip) -and (Get-Item $driverZip).Length -gt 1000) {
+                      $downloadSuccess = $true
+                      break
+                  }
+              } catch {
+                  Write-Warning "Download failed from $url: $_"
+              }
+          }
+
+          if (-not $downloadSuccess) {
+              Write-Error "Failed to download virtual display driver from all sources."
+              exit 1
+          }
+
           Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force
           
           $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
@@ -119,7 +144,7 @@ jobs:
           $process = Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/qn", "/norestart" -Wait -PassThru
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-          # Explicit binary path resolution (default Tailscale installation path)
+          # Explicit binary path resolution
           $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
           
           # Poll until the executable is available on disk
