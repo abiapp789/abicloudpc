@@ -18,11 +18,10 @@ jobs:
           # 2. Force Remote Desktop active display buffer
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxInstanceCount" -Value 100 -Force
           
-          # 3. Enable RDP Audio Redirection in Registry
+          # 3. Enable RDP Audio Redirection in Registry (pwsh syntax fix)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCam" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableAudioCapture" -Value 0 -Force
           
-          # Ensure registry policy path exists first
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "fDisableAudioCapture" -Value 0 -Type DWord -Force
@@ -66,7 +65,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
 
           # Infinite session duration & disable lock screen
-          $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsPersonalization'
+          $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
@@ -76,7 +75,7 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
 
-      - name: Install Virtual Display & Virtual Audio Drivers
+      - name: Install Virtual Display & Virtual Audio Driver
         run: |
           # --- 1. Install Virtual Display Driver ---
           $driverZip = "$env:TEMP\usbmmidd.zip"
@@ -106,23 +105,19 @@ jobs:
               }
           }
 
-          # --- 2. Install Virtual Audio Cable Driver (VB-Audio) ---
-          $audioZip = "$env:TEMP\VBCABLE.zip"
-          $audioDir = "C:\VirtualAudio"
-          New-Item -ItemType Directory -Path $audioDir -Force | Out-Null
-          
-          $audioUrl = "https://download.vb-audio.com/Download_ZIP/VBCABLE_Driver_Pack43.zip"
+          # --- 2. Install ScreenCaptureRecorder (Virtual Audio/Video Device) ---
           try {
-              Invoke-WebRequest -Uri $audioUrl -OutFile $audioZip -UseBasicParsing -TimeoutSec 45
-              Expand-Archive -Path $audioZip -DestinationPath $audioDir -Force
+              $scrUrl = "https://github.com/rdp/screen-capture-recorder-to-video-windows-free/releases/download/v0.12.10/ScreenCaptureRecorder-x64-v0.12.10.exe"
+              $scrInstaller = "$env:TEMP\scr_setup.exe"
               
-              $audioInstaller = Join-Path $audioDir "VBCABLE_Setup_x64.exe"
-              if (Test-Path $audioInstaller) {
-                  Start-Process -FilePath $audioInstaller -ArgumentList "-i", "-h" -Wait
-                  Write-Host "Virtual Audio Cable successfully installed."
-              }
+              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+              Invoke-WebRequest -Uri $scrUrl -OutFile $scrInstaller -UseBasicParsing
+              
+              # Silent install screen capture virtual audio card
+              Start-Process -FilePath $scrInstaller -ArgumentList "/S" -Wait
+              Write-Host "Virtual Audio Device successfully registered."
           } catch {
-              Write-Warning "Virtual Audio Driver installation failed: $($_.Exception.Message)"
+              Write-Warning "Failed installing ScreenCaptureRecorder: $($_.Exception.Message)"
           }
 
       - name: Install OBS Studio & Zoom
@@ -131,9 +126,8 @@ jobs:
           winget install --id OBSProject.OBSStudio --exact --source winget --accept-source-agreements --accept-package-agreements
           winget install --id Zoom.Zoom -e --source winget --accept-source-agreements --accept-package-agreements
 
-      - name: Configure Direct Console Auto-Loop (Fixes Close Black Screen)
+      - name: Configure Direct Console Auto-Loop
         run: |
-          # Re-attaches to console ONLY when an RDP session becomes disconnected
           $scriptContent = @'
           while ($true) {
               $output = qwinsta
@@ -206,13 +200,13 @@ jobs:
       - name: Maintain Active Runner Loop
         run: |
           Write-Host "`n======================================================="
-          Write-Host "RDP ACCESS READY (AUDIO & OBS/ZOOM INSTALLED)"
+          Write-Host "RDP ACCESS READY"
           Write-Host "Address  : $env:TAILSCALE_IP"
           Write-Host "Username : Abi Cloud PC"
           Write-Host "Password : [PROTECTED BY RDP_PASSWORD SECRET]"
           Write-Host "=======================================================\n"
 
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP, Display & Audio Engine Active..."
+              Write-Host "[$(Get-Date)] RDP & Virtual Engine Active..."
               Start-Sleep -Seconds 300
           }
