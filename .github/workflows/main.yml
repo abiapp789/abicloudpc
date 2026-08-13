@@ -80,28 +80,25 @@ jobs:
 
       - name: Configure Direct Console Auto-Loop (Fixes Close Black Screen)
         run: |
-          # Create continuous loop script that keeps console session attached
+          # Re-attaches to console ONLY when an RDP session becomes disconnected
           $scriptContent = @'
           while ($true) {
               $output = qwinsta
               foreach ($line in $output) {
-                  if ($line -match "disc" -or $line -match "rdp-tcp#") {
-                      $fields = $line.Trim() -split "\s+"
-                      foreach ($field in $fields) {
-                          if ($field -match "^\d+$" -and $field -ne "0") {
-                              cmd.exe /c "tscon $field /dest:console" 2>$null
-                          }
+                  if ($line -match "disc\s+(\d+)") {
+                      $sessionId = $matches[1]
+                      if ($sessionId -ne "0") {
+                          cmd.exe /c "tscon $sessionId /dest:console" 2>$null
                       }
                   }
               }
-              Start-Sleep -Seconds 2
+              Start-Sleep -Seconds 5
           }
           '@
 
           $scriptPath = "C:\KeepScreenAlive.ps1"
           $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8
 
-          # Run as SYSTEM Scheduled Task so it has permissions to hijack session
           $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
           $trigger = New-ScheduledTaskTrigger -AtStartup
           $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
