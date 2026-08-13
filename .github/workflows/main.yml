@@ -68,7 +68,7 @@ jobs:
           
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
           
-          # Direct URLs with GitHub raw fallback mirror
+          # URLs with mirror fallbacks
           $urls = @(
               "https://raw.githubusercontent.com/roshkins/IddSampleDriver/main/usbmmidd_v2.zip",
               "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
@@ -85,7 +85,7 @@ jobs:
                       break
                   }
               } catch {
-                  Write-Warning "Download failed from $url: $_"
+                  Write-Warning "Download failed from $url - Exception: $($_.Exception.Message)"
               }
           }
 
