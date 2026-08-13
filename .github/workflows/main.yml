@@ -9,32 +9,32 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP & Power Settings
+      - name: Configure Core RDP & Display Buffers
         run: |
-          # Enable Remote Desktop safely
+          # 1. Enable RDP & Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          
-          # Allow RDP through Windows Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
-          # Disable monitor timeouts and power savings
+          # 2. Force Remote Desktop to keep active display buffer rendered
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxInstanceCount" -Value 100 -Force
+          
+          # 3. Prevent power down or screen timeout
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change disk-timeout-ac 0
 
-          # Restart Remote Desktop Service
+          # 4. Restart TermService
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User & Set Policy Retention
+      - name: Create RDP User & Security Policies
         run: |
           $userName = "Abi Cloud PC"
           $password = "${{ secrets.RDP_PASSWORD }}"
           if (-not $password) { $password = "123456" }
           
-          # Mask password in GitHub Actions runner logs
           Write-Host "::add-mask::$password"
           
-          # 1. Disable local Windows password complexity requirements safely
+          # Disable local password complexity
           secedit /export /cfg "$env:TEMP\secpol.cfg"
           $cfgContent = Get-Content "$env:TEMP\secpol.cfg"
           $cfgContent = $cfgContent -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'
@@ -42,92 +42,72 @@ jobs:
           $cfgContent | Out-File -Encoding ascii "$env:TEMP\secpol.cfg"
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
           
-          # 2. Create User using Repository Secret or Default
+          # Create Account
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name $userName -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
           net user "$userName" "$password"
           
           Add-LocalGroupMember -Group "Administrators" -Member $userName -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
-          
-          # 3. Add Registry Keys to prevent disconnect / logoff termination
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fResetBroken" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fReconnectSame" -Value 1 -Force
 
-          # 4. Disable Lock Screen on Disconnect
+          # Infinite session duration & disable lock screen
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
 
-          # 5. Apply Group Policies for infinite session duration
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
           Set-ItemProperty -Path $tsPath -Name "MaxIdleTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
 
-      - name: Install Virtual Display Driver (Fixes Black Screen)
+      - name: Install Virtual Driver & Set Active Resolution
         run: |
           $driverUrl = "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
           $driverZip = "$env:TEMP\usbmmidd.zip"
           $driverDir = "C:\VirtualDisplay"
           
-          # Download and Extract
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
           Invoke-WebRequest -Uri $driverUrl -OutFile $driverZip -UseBasicParsing
           Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force
           
-          # Locate deviceinstaller64.exe dynamically
           $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
-          
-          if (-not $installer) {
-              Write-Error "deviceinstaller64.exe was not found after extraction."
-              exit 1
+          if ($installer) {
+              Set-Location $installer.DirectoryName
+              & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
+              & .\deviceinstaller64.exe enableidd 1
           }
 
-          $installerDir = $installer.DirectoryName
-          Set-Location $installerDir
-          
-          # Install driver and enable virtual monitor
-          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
-          & .\deviceinstaller64.exe enableidd 1
-          
-          # Set registry flags for active headless rendering
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name "AutoAdminLogon" -Value "0" -Force
-
-      - name: Install Automated Console Redirector
+      - name: Configure Direct Console Auto-Loop (Fixes Close Black Screen)
         run: |
+          # Create continuous loop script that keeps console session attached
           $scriptContent = @'
-          $code = @"
-          using System;
-          using System.Runtime.InteropServices;
-          public class Native {
-              [DllImport("kernel32.dll")]
-              public static extern uint WTSGetActiveConsoleSessionId();
-              [DllImport("wtsapi32.dll", SetLastError = true)]
-              public static extern bool WTSConnectSession(uint LogonId, uint TargetLogonId, string pPassword, bool bWait);
-          }
-          "@
-          Add-Type -TypeDefinition $code
-
           while ($true) {
-              $sessions = qwinsta
-              foreach ($line in $sessions) {
-                  if ($line -match "Disc" -and $line -match "(\d+)") {
-                      $sessionId = [uint32]$matches[1]
-                      $consoleId = [Native]::WTSGetActiveConsoleSessionId()
-                      tscon $sessionId /dest:console /a 2>$null
+              $output = qwinsta
+              foreach ($line in $output) {
+                  if ($line -match "disc" -or $line -match "rdp-tcp#") {
+                      $fields = $line.Trim() -split "\s+"
+                      foreach ($field in $fields) {
+                          if ($field -match "^\d+$" -and $field -ne "0") {
+                              cmd.exe /c "tscon $field /dest:console" 2>$null
+                          }
+                      }
                   }
               }
-              Start-Sleep -Seconds 3
+              Start-Sleep -Seconds 2
           }
           '@
 
-          $scriptPath = "C:\KeepLiveAlive.ps1"
+          $scriptPath = "C:\KeepScreenAlive.ps1"
           $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8
 
-          # Run loop directly in runner background process
-          Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File $scriptPath" -WindowStyle Hidden
+          # Run as SYSTEM Scheduled Task so it has permissions to hijack session
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
+          $trigger = New-ScheduledTaskTrigger -AtStartup
+          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          
+          Register-ScheduledTask -TaskName "KeepScreenAliveTask" -Action $action -Trigger $trigger -Principal $principal -Force
+          Start-ScheduledTask -TaskName "KeepScreenAliveTask"
 
       - name: Install & Connect Tailscale
         run: |
@@ -138,7 +118,6 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
-          # Resolve exact Tailscale CLI binary path
           $tsExe = Get-ChildItem -Path "$env:ProgramFiles\Tailscale" -Recurse -Filter "tailscale.exe" | Select-Object -ExpandProperty FullName -First 1
           
           if (-not $tsExe) {
@@ -148,7 +127,6 @@ jobs:
 
           & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Retrieve allocated IPv4 address
           $tsIP = ""
           for ($i = 1; $i -le 12; $i++) {
               $tsIP = (& $tsExe ip -4 2>$null).Trim()
@@ -173,6 +151,6 @@ jobs:
           Write-Host "=======================================================\n"
 
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active & Virtual Display Active..."
+              Write-Host "[$(Get-Date)] RDP & Virtual Engine Active..."
               Start-Sleep -Seconds 300
           }
