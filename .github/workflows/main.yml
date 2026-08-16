@@ -9,6 +9,11 @@ jobs:
     timeout-minutes: 3600
 
     steps:
+      - name: Set System Time Zone to +5:30
+        run: |
+          Set-TimeZone -Id "Sri Lanka Standard Time"
+          Write-Host "Current System Time: $(Get-Date)"
+
       - name: Configure Core RDP, Display & Audio Redirection
         run: |
           # 1. Enable RDP & Firewall
@@ -18,7 +23,7 @@ jobs:
           # 2. Force Remote Desktop active display buffer
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxInstanceCount" -Value 100 -Force
           
-          # 3. Enable RDP Audio Redirection in Registry (pwsh syntax fix)
+          # 3. Enable RDP Audio Redirection in Registry
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCam" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableAudioCapture" -Value 0 -Force
           
@@ -75,9 +80,8 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
 
-      - name: Install Virtual Display & Virtual Audio Driver
+      - name: Install Virtual Display Driver
         run: |
-          # --- 1. Install Virtual Display Driver ---
           $driverZip = "$env:TEMP\usbmmidd.zip"
           $driverDir = "C:\VirtualDisplay"
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
@@ -103,27 +107,6 @@ jobs:
                   & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
                   & .\deviceinstaller64.exe enableidd 1
               }
-          }
-
-          # --- 2. Silent Non-Blocking Virtual Audio Driver (PnPutil Direct Driver Install) ---
-          try {
-              $audioZip = "$env:TEMP\VBCABLE.zip"
-              $audioDir = "C:\VirtualAudio"
-              New-Item -ItemType Directory -Path $audioDir -Force | Out-Null
-              
-              $audioUrl = "https://download.vb-audio.com/Download_ZIP/VBCABLE_Driver_Pack43.zip"
-              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-              Invoke-WebRequest -Uri $audioUrl -OutFile $audioZip -UseBasicParsing -TimeoutSec 30
-              Expand-Archive -Path $audioZip -DestinationPath $audioDir -Force
-              
-              # Force driver installation directly via pnputil (Bypasses GUI hangs completely)
-              $infPath = Join-Path $audioDir "vbcable_x64.inf"
-              if (Test-Path $infPath) {
-                  pnputil.exe /add-driver "$infPath" /install
-                  Write-Host "Virtual Audio Driver installed via pnputil without hanging."
-              }
-          } catch {
-              Write-Warning "Failed installing Virtual Audio Driver: $($_.Exception.Message)"
           }
 
       - name: Install OBS Studio & Zoom
